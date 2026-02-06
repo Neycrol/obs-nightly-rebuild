@@ -29,6 +29,54 @@ jobs:
             "$OBS_APIURL" "$OBS_APIURL" "$OBS_USERNAME" "$OBS_PASSWORD" > "$HOME/.oscrc"
           chmod 600 "$HOME/.oscrc"
 
+      - name: Refresh source services once per nightly batch
+        env:
+          OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
+        run: |
+          : "${OBS_PROJECT:=home:neycrol:buildfactory}"
+          PACKAGES=(
+            android-android-tools-git
+            android-scrcpy-git
+            aur_published-bcachefs-kernel-dkms-git
+            aur_published-bcachefs-tools-git
+            aur_published-prismlauncher-zlib-compat-git
+            cmake-git
+            gcc-git-god
+            glibc-god
+            kde-bolt-konsole-git
+            kde-bolt-kscreen
+            kde-bolt-kwin
+            kde-bolt-libkscreen
+            kde-bolt-libplasma
+            kde-bolt-plasma-workspace
+            kde-bolt-protocols
+            llvm-bolt-ndk
+            media-ffmpeg-god-git
+            network-clash2singbox-git
+            network-sing-box-master-git
+            network-subconverter-optimized-git
+            pacman-contrib-god
+            pacman-git
+            pacman-git-icu-god
+            pacutils-god
+            paru
+            tools-cursor-agent-bin
+            tools-fish_pgo
+          )
+
+          fail_count=0
+          for pkg in "${PACKAGES[@]}"; do
+            echo "runservice: $pkg"
+            if ! osc api -X POST "/source/${OBS_PROJECT}/${pkg}?cmd=runservice" >/dev/null; then
+              echo "WARN: runservice failed for $pkg" >&2
+              fail_count=$((fail_count + 1))
+            fi
+          done
+
+          echo "runservice failed packages: $fail_count"
+          # Keep rebuild flow running even if a few runservice calls fail.
+          # The next nightly run will retry.
+
       - name: Trigger full project rebuild on OBS
         env:
           OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
