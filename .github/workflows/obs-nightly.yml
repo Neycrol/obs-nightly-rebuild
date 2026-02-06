@@ -25,15 +25,8 @@ jobs:
           OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
         run: |
           : "${OBS_APIURL:=https://api.opensuse.org}"
-          cat > "$HOME/.oscrc" <<EOC
-[general]
-apiurl = ${OBS_APIURL}
-
-[${OBS_APIURL}]
-user = ${OBS_USERNAME}
-pass = ${OBS_PASSWORD}
-credentials_mgr_class = PlaintextConfigFileCredentialsManager
-EOC
+          printf '[general]\napiurl = %s\n\n[%s]\nuser = %s\npass = %s\ncredentials_mgr_class = PlaintextConfigFileCredentialsManager\n' \
+            "$OBS_APIURL" "$OBS_APIURL" "$OBS_USERNAME" "$OBS_PASSWORD" > "$HOME/.oscrc"
           chmod 600 "$HOME/.oscrc"
 
       - name: Trigger full project rebuild on OBS
