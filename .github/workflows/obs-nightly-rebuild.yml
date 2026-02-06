@@ -1,6 +1,6 @@
 name: OBS Nightly Full Rebuild
 
-on:
+'on':
   schedule:
     # Europe evening (UTC winter): 19:40
     - cron: '40 19 * * *'
