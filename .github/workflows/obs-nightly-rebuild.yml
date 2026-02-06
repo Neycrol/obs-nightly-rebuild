@@ -1,12 +1,12 @@
 name: OBS Nightly Full Rebuild
 
-'on':
+on:
+  workflow_dispatch:
   schedule:
     # Europe evening (UTC winter): 19:40
     - cron: '40 19 * * *'
     # US evening (UTC winter): 03:40
     - cron: '40 3 * * *'
-  workflow_dispatch: {}
 
 jobs:
   rebuild:
@@ -25,7 +25,6 @@ jobs:
           OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
         run: |
           : "${OBS_APIURL:=https://api.opensuse.org}"
-          mkdir -p "$HOME"
           cat > "$HOME/.oscrc" <<EOC
 [general]
 apiurl = ${OBS_APIURL}
