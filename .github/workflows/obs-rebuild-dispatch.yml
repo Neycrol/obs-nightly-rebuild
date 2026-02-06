@@ -1,6 +1,6 @@
 name: OBS Rebuild Dispatch Probe
 
-on:
+'on':
   workflow_dispatch:
 
 jobs:
