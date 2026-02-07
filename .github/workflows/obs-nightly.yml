@@ -8,6 +8,10 @@ on:
     # US evening (UTC winter): 03:40
     - cron: '40 3 * * *'
 
+concurrency:
+  group: obs-nightly-rebuild
+  cancel-in-progress: false
+
 jobs:
   rebuild:
     runs-on: ubuntu-latest
@@ -32,8 +36,12 @@ jobs:
       - name: Refresh source services once per nightly batch
         env:
           OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_REPO: ${{ secrets.OBS_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
           : "${OBS_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_REPO:=buildfactory}"
+          : "${OBS_ARCH:=x86_64}"
           PACKAGES=(
             android-android-tools-git
             android-scrcpy-git
@@ -66,6 +74,16 @@ jobs:
 
           fail_count=0
           for pkg in "${PACKAGES[@]}"; do
+            status_xml="$(osc api "/build/${OBS_PROJECT}/${OBS_REPO}/${OBS_ARCH}/${pkg}/_status" 2>/dev/null || true)"
+            if echo "$status_xml" | grep -q 'code="building"'; then
+              echo "skip runservice: $pkg (currently building)"
+              continue
+            fi
+            if echo "$status_xml" | grep -q 'service in progress'; then
+              echo "skip runservice: $pkg (service already in progress)"
+              continue
+            fi
+
             echo "runservice: $pkg"
             if ! osc api -X POST "/source/${OBS_PROJECT}/${pkg}?cmd=runservice" >/dev/null; then
               echo "WARN: runservice failed for $pkg" >&2
