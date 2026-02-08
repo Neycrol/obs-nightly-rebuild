@@ -3,10 +3,8 @@ name: OBS Nightly Rebuild
 on:
   workflow_dispatch:
   schedule:
-    # Europe evening (UTC winter): 19:40
+    # Daily run (UTC): 19:40
     - cron: '40 19 * * *'
-    # US evening (UTC winter): 03:40
-    - cron: '40 3 * * *'
 
 concurrency:
   group: obs-nightly-rebuild
