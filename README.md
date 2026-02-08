@@ -1,7 +1,11 @@
 # Cloud-side OBS Nightly Rebuild
 
-This setup triggers a full rebuild of the OBS project from GitHub Actions on a schedule.
-No local computer is required.
+This setup drives a two-stage OBS nightly pipeline:
+
+1. Refresh services and rebuild `home:neycrol:buildfactory-bootstrap` first (glibc producer).
+2. Refresh services and rebuild `home:neycrol:buildfactory` second (single consumer repo).
+
+The consumer project exposes a single pacman repository URL, so clients only need one custom repo.
 
 ## 1. Put workflow in a GitHub repository
 
@@ -21,19 +25,30 @@ Optional secrets:
 - `OBS_APIURL` (default: `https://api.opensuse.org`)
 - `OBS_PROJECT` (default: `home:neycrol:buildfactory`)
 - `OBS_REPO` (default: `buildfactory`)
+- `OBS_BOOTSTRAP_PROJECT` (default: `home:neycrol:buildfactory-bootstrap`)
+- `OBS_BOOTSTRAP_REPO` (default: `bootstrap`)
 - `OBS_ARCH` (default: `x86_64`)
 
 ## 3. Schedule
 
-Current schedule is twice daily:
+Current schedule is once daily:
 
-- `19:40 UTC` (Europe evening)
-- `03:40 UTC` (US evening)
+- `19:40 UTC`
 
 Adjust cron lines in the workflow if needed.
 
+## Single pacman repo
+
+Use this published path:
+
+- `https://downloadcontent.opensuse.org/repositories/home:/neycrol:/buildfactory/buildfactory/x86_64/`
+
+Current db filename:
+
+- `home_neycrol_buildfactory_buildfactory.db`
+
 ## Notes
 
-- This triggers rebuilds only; it doesn't alter package sources.
-- OBS source services (`tar_scm`) run server-side during rebuild chain as needed.
-- Rebuild overlap is naturally handled by OBS scheduler, but you can reduce frequency if queue pressure is high.
+- The workflow dynamically enumerates project packages and runs `runservice` only for packages that actually contain `_service`.
+- Build order is enforced as: bootstrap -> main.
+- Main project should contain `glibc-god` as an `_aggregate` package from bootstrap, so one repo remains sufficient for clients.

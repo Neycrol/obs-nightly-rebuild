@@ -13,7 +13,7 @@ concurrency:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 360
     steps:
       - name: Install osc client
         run: |
@@ -31,82 +31,141 @@ jobs:
             "$OBS_APIURL" "$OBS_APIURL" "$OBS_USERNAME" "$OBS_PASSWORD" > "$HOME/.oscrc"
           chmod 600 "$HOME/.oscrc"
 
-      - name: Refresh source services once per nightly batch
+      - name: Refresh source services (bootstrap and main, all packages)
         env:
-          OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
-          OBS_REPO: ${{ secrets.OBS_REPO }}
+          OBS_BOOTSTRAP_PROJECT: ${{ secrets.OBS_BOOTSTRAP_PROJECT }}
+          OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
+          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
-          : "${OBS_PROJECT:=home:neycrol:buildfactory}"
-          : "${OBS_REPO:=buildfactory}"
+          : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
+          : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
+          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
-          PACKAGES=(
-            android-android-tools-git
-            android-scrcpy-git
-            aur_published-bcachefs-kernel-dkms-git
-            aur_published-bcachefs-tools-git
-            aur_published-prismlauncher-zlib-compat-git
-            cmake-git
-            gcc-git-god
-            glibc-god
-            kde-bolt-konsole-git
-            kde-bolt-kscreen
-            kde-bolt-kwin
-            kde-bolt-libkscreen
-            kde-bolt-libplasma
-            kde-bolt-plasma-workspace
-            kde-bolt-protocols
-            llvm-bolt-ndk
-            media-ffmpeg-god-git
-            network-clash2singbox-git
-            network-sing-box-master-git
-            network-subconverter-optimized-git
-            pacman-contrib-god
-            pacman-git
-            pacman-git-icu-god
-            pacutils-god
-            paru
-            tools-cursor-agent-bin
-            tools-fish_pgo
-          )
 
-          fail_count=0
-          for pkg in "${PACKAGES[@]}"; do
-            status_xml="$(osc api "/build/${OBS_PROJECT}/${OBS_REPO}/${OBS_ARCH}/${pkg}/_status" 2>/dev/null || true)"
-            if echo "$status_xml" | grep -q 'code="building"'; then
-              echo "skip runservice: $pkg (currently building)"
-              continue
-            fi
-            if echo "$status_xml" | grep -q 'service in progress'; then
-              echo "skip runservice: $pkg (service already in progress)"
-              continue
+          refresh_services_for_project() {
+            local project="$1"
+            local repo="$2"
+            local failed=0
+            local total=0
+            local svc=0
+
+            while IFS= read -r pkg; do
+              [ -n "$pkg" ] || continue
+              total=$((total + 1))
+
+              if ! osc cat "$project" "$pkg" _service >/dev/null 2>&1; then
+                continue
+              fi
+              svc=$((svc + 1))
+
+              status_xml="$(osc api "/build/${project}/${repo}/${OBS_ARCH}/${pkg}/_status" 2>/dev/null || true)"
+              if echo "$status_xml" | grep -q 'code="building"'; then
+                echo "skip runservice: ${project}/${pkg} (currently building)"
+                continue
+              fi
+              if echo "$status_xml" | grep -q 'service in progress'; then
+                echo "skip runservice: ${project}/${pkg} (service in progress)"
+                continue
+              fi
+
+              echo "runservice: ${project}/${pkg}"
+              if ! osc api -X POST "/source/${project}/${pkg}?cmd=runservice" >/dev/null; then
+                echo "WARN: runservice failed for ${project}/${pkg}" >&2
+                failed=$((failed + 1))
+              fi
+            done < <(osc ls "$project")
+
+            echo "project=${project} packages=${total} service_packages=${svc} runservice_failed=${failed}"
+          }
+
+          refresh_services_for_project "$OBS_BOOTSTRAP_PROJECT" "$OBS_BOOTSTRAP_REPO"
+          refresh_services_for_project "$OBS_MAIN_PROJECT" "$OBS_MAIN_REPO"
+
+      - name: Rebuild bootstrap project first (glibc producer)
+        env:
+          OBS_BOOTSTRAP_PROJECT: ${{ secrets.OBS_BOOTSTRAP_PROJECT }}
+          OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
+        run: |
+          : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
+          : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
+          : "${OBS_ARCH:=x86_64}"
+          osc rebuild --all --repo "$OBS_BOOTSTRAP_REPO" --arch "$OBS_ARCH" "$OBS_BOOTSTRAP_PROJECT"
+
+      - name: Wait bootstrap glibc producer to finish
+        env:
+          OBS_BOOTSTRAP_PROJECT: ${{ secrets.OBS_BOOTSTRAP_PROJECT }}
+          OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
+        run: |
+          : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
+          : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
+          : "${OBS_ARCH:=x86_64}"
+
+          timeout_sec=$((5 * 60 * 60))
+          interval=30
+          elapsed=0
+
+          while true; do
+            state="$(osc results "$OBS_BOOTSTRAP_PROJECT" -r "$OBS_BOOTSTRAP_REPO" -a "$OBS_ARCH" --csv \
+              | awk -F';' '$1=="glibc-god"{print $2}')"
+
+            echo "bootstrap glibc-god state=${state:-unknown} elapsed=${elapsed}s"
+            case "$state" in
+              succeeded|published|finished)
+                break
+                ;;
+              failed|broken|unresolvable|excluded|disabled)
+                echo "bootstrap glibc-god ended in non-success state: $state" >&2
+                exit 1
+                ;;
+            esac
+
+            if [ "$elapsed" -ge "$timeout_sec" ]; then
+              echo "timeout waiting for bootstrap glibc-god to finish" >&2
+              exit 1
             fi
 
-            echo "runservice: $pkg"
-            if ! osc api -X POST "/source/${OBS_PROJECT}/${pkg}?cmd=runservice" >/dev/null; then
-              echo "WARN: runservice failed for $pkg" >&2
-              fail_count=$((fail_count + 1))
-            fi
+            sleep "$interval"
+            elapsed=$((elapsed + interval))
           done
 
-          echo "runservice failed packages: $fail_count"
-          # Keep rebuild flow running even if a few runservice calls fail.
-          # The next nightly run will retry.
-
-      - name: Trigger full project rebuild on OBS
+      - name: Trigger main project full rebuild on OBS
         env:
-          OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
-          OBS_REPO: ${{ secrets.OBS_REPO }}
+          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
-          : "${OBS_PROJECT:=home:neycrol:buildfactory}"
-          : "${OBS_REPO:=buildfactory}"
+          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
-          osc rebuild --all --repo "$OBS_REPO" --arch "$OBS_ARCH" "$OBS_PROJECT"
+          # Main project holds the single consumer repo and includes glibc-god aggregate package.
+          osc rebuild --all --repo "$OBS_MAIN_REPO" --arch "$OBS_ARCH" "$OBS_MAIN_PROJECT"
+          # Ensure glibc aggregate is scheduled right after bootstrap producer completion.
+          osc rebuildpac "$OBS_MAIN_PROJECT" glibc-god "$OBS_MAIN_REPO" "$OBS_ARCH" || true
 
       - name: Print current status summary
         env:
-          OBS_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_BOOTSTRAP_PROJECT: ${{ secrets.OBS_BOOTSTRAP_PROJECT }}
+          OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
+          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
-          : "${OBS_PROJECT:=home:neycrol:buildfactory}"
-          osc results "$OBS_PROJECT" || true
+          : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
+          : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
+          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_MAIN_REPO:=buildfactory}"
+          : "${OBS_ARCH:=x86_64}"
+
+          echo "=== bootstrap summary ==="
+          osc results "$OBS_BOOTSTRAP_PROJECT" -r "$OBS_BOOTSTRAP_REPO" -a "$OBS_ARCH" || true
+          echo "=== main summary ==="
+          osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" || true
+
+          echo "=== single pacman repo (published path) ==="
+          echo "https://downloadcontent.opensuse.org/repositories/home:/neycrol:/buildfactory/buildfactory/x86_64/"
+          echo "db file: home_neycrol_buildfactory_buildfactory.db"
