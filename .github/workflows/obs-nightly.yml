@@ -31,18 +31,14 @@ jobs:
             "$OBS_APIURL" "$OBS_APIURL" "$OBS_USERNAME" "$OBS_PASSWORD" > "$HOME/.oscrc"
           chmod 600 "$HOME/.oscrc"
 
-      - name: Refresh source services (bootstrap and main, all packages)
+      - name: Refresh source services (bootstrap only)
         env:
           OBS_BOOTSTRAP_PROJECT: ${{ secrets.OBS_BOOTSTRAP_PROJECT }}
           OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
-          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
-          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
           : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
           : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
-          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
-          : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
 
           refresh_services_for_project() {
@@ -82,7 +78,6 @@ jobs:
           }
 
           refresh_services_for_project "$OBS_BOOTSTRAP_PROJECT" "$OBS_BOOTSTRAP_REPO"
-          refresh_services_for_project "$OBS_MAIN_PROJECT" "$OBS_MAIN_REPO"
 
       - name: Rebuild bootstrap project first (glibc producer)
         env:
@@ -132,6 +127,48 @@ jobs:
             sleep "$interval"
             elapsed=$((elapsed + interval))
           done
+
+      - name: Refresh source services (main only)
+        env:
+          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
+        run: |
+          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_MAIN_REPO:=buildfactory}"
+          : "${OBS_ARCH:=x86_64}"
+
+          failed=0
+          total=0
+          svc=0
+
+          while IFS= read -r pkg; do
+            [ -n "$pkg" ] || continue
+            total=$((total + 1))
+
+            if ! osc cat "$OBS_MAIN_PROJECT" "$pkg" _service >/dev/null 2>&1; then
+              continue
+            fi
+            svc=$((svc + 1))
+
+            status_xml="$(osc api "/build/${OBS_MAIN_PROJECT}/${OBS_MAIN_REPO}/${OBS_ARCH}/${pkg}/_status" 2>/dev/null || true)"
+            if echo "$status_xml" | grep -q 'code="building"'; then
+              echo "skip runservice: ${OBS_MAIN_PROJECT}/${pkg} (currently building)"
+              continue
+            fi
+            if echo "$status_xml" | grep -q 'service in progress'; then
+              echo "skip runservice: ${OBS_MAIN_PROJECT}/${pkg} (service in progress)"
+              continue
+            fi
+
+            echo "runservice: ${OBS_MAIN_PROJECT}/${pkg}"
+            if ! osc api -X POST "/source/${OBS_MAIN_PROJECT}/${pkg}?cmd=runservice" >/dev/null; then
+              echo "WARN: runservice failed for ${OBS_MAIN_PROJECT}/${pkg}" >&2
+              failed=$((failed + 1))
+            fi
+          done < <(osc ls "$OBS_MAIN_PROJECT")
+
+          echo "project=${OBS_MAIN_PROJECT} packages=${total} service_packages=${svc} runservice_failed=${failed}"
 
       - name: Trigger main project full rebuild on OBS
         env:
