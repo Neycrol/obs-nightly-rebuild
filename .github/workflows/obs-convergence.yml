@@ -82,6 +82,8 @@ jobs:
 
             for pkg in "${bad_pkgs[@]}"; do
               [ -n "$pkg" ] || continue
+              echo "----- buildlog tail: ${pkg} -----"
+              osc remotebuildlog "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" 2>/dev/null | tail -n 120 || true
               echo "rebuildpac: ${pkg}"
               osc rebuildpac "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" || true
             done
