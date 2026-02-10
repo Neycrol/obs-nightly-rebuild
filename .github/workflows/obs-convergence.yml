@@ -8,8 +8,8 @@ on:
     types:
       - completed
   schedule:
-    # Periodic convergence check/recovery (UTC): every 2 hours at :15
-    - cron: '15 */2 * * *'
+    # Periodic convergence check/recovery (UTC): hourly at :15
+    - cron: '15 * * * *'
 
 concurrency:
   group: obs-convergence-watch
