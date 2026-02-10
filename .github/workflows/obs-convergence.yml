@@ -1,0 +1,112 @@
+name: OBS Convergence Watch
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - OBS Nightly Rebuild
+    types:
+      - completed
+  schedule:
+    # Periodic convergence check/recovery (UTC): every 2 hours at :15
+    - cron: '15 */2 * * *'
+
+concurrency:
+  group: obs-convergence-watch
+  cancel-in-progress: false
+
+jobs:
+  converge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Install osc client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osc
+
+      - name: Configure osc credentials
+        env:
+          OBS_APIURL: ${{ secrets.OBS_APIURL }}
+          OBS_USERNAME: ${{ secrets.OBS_USERNAME }}
+          OBS_PASSWORD: ${{ secrets.OBS_PASSWORD }}
+        run: |
+          : "${OBS_APIURL:=https://api.opensuse.org}"
+          printf '[general]\napiurl = %s\n\n[%s]\nuser = %s\npass = %s\ncredentials_mgr_class = osc.credentials.PlaintextConfigFileCredentialsManager\n' \
+            "$OBS_APIURL" "$OBS_APIURL" "$OBS_USERNAME" "$OBS_PASSWORD" > "$HOME/.oscrc"
+          chmod 600 "$HOME/.oscrc"
+
+      - name: Check convergence and auto-retry hard failures
+        env:
+          OBS_MAIN_PROJECT: ${{ secrets.OBS_PROJECT }}
+          OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
+          OBS_ARCH: ${{ secrets.OBS_ARCH }}
+        run: |
+          set -euo pipefail
+
+          : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
+          : "${OBS_MAIN_REPO:=buildfactory}"
+          : "${OBS_ARCH:=x86_64}"
+
+          results_csv="$(mktemp)"
+          osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv > "$results_csv"
+
+          read -r succeeded blocked building scheduled dispatching signing finished failed broken unresolvable excluded disabled < <(
+            awk -F';' '
+              NF>=2 && $1!="_" { c[$2]++ }
+              END {
+                print c["succeeded"]+0, c["blocked"]+0, c["building"]+0,
+                      c["scheduled"]+0, c["dispatching"]+0, c["signing"]+0,
+                      c["finished"]+0, c["failed"]+0, c["broken"]+0,
+                      c["unresolvable"]+0, c["excluded"]+0, c["disabled"]+0
+              }' "$results_csv"
+          )
+
+          echo "main states: succeeded=${succeeded} blocked=${blocked} building=${building} scheduled=${scheduled} dispatching=${dispatching} signing=${signing} finished=${finished} failed=${failed} broken=${broken} unresolvable=${unresolvable} excluded=${excluded} disabled=${disabled}"
+          {
+            echo "## OBS convergence snapshot"
+            echo ""
+            echo "- project: \`$OBS_MAIN_PROJECT\`"
+            echo "- repo/arch: \`$OBS_MAIN_REPO/$OBS_ARCH\`"
+            echo "- states: succeeded=$succeeded blocked=$blocked building=$building scheduled=$scheduled dispatching=$dispatching signing=$signing finished=$finished failed=$failed broken=$broken unresolvable=$unresolvable excluded=$excluded disabled=$disabled"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          hard_fail=$((failed + broken + unresolvable))
+          if [ "$hard_fail" -gt 0 ]; then
+            echo "hard failure states detected; listing and scheduling targeted retries"
+            awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print}' "$results_csv"
+
+            mapfile -t bad_pkgs < <(
+              awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print $1}' "$results_csv" | sort -u
+            )
+
+            for pkg in "${bad_pkgs[@]}"; do
+              [ -n "$pkg" ] || continue
+              echo "rebuildpac: ${pkg}"
+              osc rebuildpac "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" || true
+            done
+
+            {
+              echo ""
+              echo "### Retried packages"
+              for pkg in "${bad_pkgs[@]}"; do
+                echo "- \`$pkg\`"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            echo "hard failure states remain after scheduling retries" >&2
+            exit 1
+          fi
+
+          active=$((blocked + building + scheduled + dispatching + signing))
+          if [ "$active" -gt 0 ]; then
+            echo "project is still converging on OBS; no hard failure states"
+            exit 0
+          fi
+
+          echo "project converged: no active states and no hard failures"
+
+      - name: Print single-repo URL
+        run: |
+          echo "https://downloadcontent.opensuse.org/repositories/home:/neycrol:/buildfactory/buildfactory/x86_64/"
+          echo "db file: home_neycrol_buildfactory_buildfactory.db"
