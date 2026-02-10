@@ -80,20 +80,50 @@ jobs:
               awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print $1}' "$results_csv" | sort -u
             )
 
+            retried_any=0
+            skipped_toolchain=0
+            retried_pkgs=()
+            skipped_pkgs=()
             for pkg in "${bad_pkgs[@]}"; do
               [ -n "$pkg" ] || continue
               echo "----- buildlog tail: ${pkg} -----"
-              osc remotebuildlog "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" 2>/dev/null | tail -n 120 || true
+              log_tail="$(mktemp)"
+              osc remotebuildlog "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" 2>/dev/null | tail -n 120 > "$log_tail" || true
+              cat "$log_tail"
+
+              if grep -Eq 'cannot find crtbeginS\.o|cannot find -lgcc' "$log_tail"; then
+                echo "skip rebuildpac: ${pkg} (toolchain compatibility blocker detected: missing crtbeginS.o/-lgcc)"
+                skipped_toolchain=$((skipped_toolchain + 1))
+                skipped_pkgs+=("$pkg")
+                continue
+              fi
+
               echo "rebuildpac: ${pkg}"
               osc rebuildpac "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" || true
+              retried_any=$((retried_any + 1))
+              retried_pkgs+=("$pkg")
             done
 
             {
               echo ""
               echo "### Retried packages"
-              for pkg in "${bad_pkgs[@]}"; do
-                echo "- \`$pkg\`"
-              done
+              if [ "$retried_any" -eq 0 ]; then
+                echo "- (none)"
+              else
+                for pkg in "${retried_pkgs[@]}"; do
+                  echo "- \`$pkg\`"
+                done
+              fi
+              if [ "$skipped_toolchain" -gt 0 ]; then
+                echo ""
+                echo "### Toolchain blockers"
+                echo "- Detected missing \`crtbeginS.o\` / \`-lgcc\` in failed build logs."
+                echo "- Auto-retry is intentionally skipped for those packages to avoid reset loops."
+                echo "- Action required: fix GCC packaging compatibility (startup objects/linker search path)."
+                for pkg in "${skipped_pkgs[@]}"; do
+                  echo "- \`$pkg\`"
+                done
+              fi
             } >> "$GITHUB_STEP_SUMMARY"
 
             echo "hard failure states remain after scheduling retries" >&2
