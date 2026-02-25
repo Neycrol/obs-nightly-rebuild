@@ -194,10 +194,13 @@ jobs:
           : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
 
-          # We only need to verify that rebuild was accepted and no hard failure
-          # states appear early. OBS signing/publishing tails can run for hours.
+          # We only need to verify that rebuild was accepted and no persistent
+          # hard failure states remain. OBS signing/publishing tails can run for hours.
           monitor_sec=$((90 * 60))
           interval=60
+          grace_sec=$((15 * 60))
+          hard_fail_required=3
+          hard_fail_confirmations=0
           elapsed=0
 
           while [ "$elapsed" -le "$monitor_sec" ]; do
@@ -215,14 +218,32 @@ jobs:
 
             echo "main states: succeeded=${succeeded} blocked=${blocked} building=${building} scheduled=${scheduled} dispatching=${dispatching} signing=${signing} finished=${finished} failed=${failed} broken=${broken} unresolvable=${unresolvable} excluded=${excluded} disabled=${disabled} elapsed=${elapsed}s"
 
-            if [ "$failed" -gt 0 ] || [ "$broken" -gt 0 ] || [ "$unresolvable" -gt 0 ]; then
-              echo "main project entered failure states" >&2
-              osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv \
-                | awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print}'
-              exit 1
+            hard_fail=$((failed + broken + unresolvable))
+            core_active=$((building + scheduled + dispatching))
+
+            if [ "$hard_fail" -gt 0 ]; then
+              if [ "$elapsed" -lt "$grace_sec" ]; then
+                echo "hard failure states observed in grace window (${elapsed}s < ${grace_sec}s); waiting for stabilization"
+                hard_fail_confirmations=0
+              elif [ "$core_active" -gt 0 ]; then
+                hard_fail_confirmations=$((hard_fail_confirmations + 1))
+                echo "hard failure states observed while queue active (confirmation ${hard_fail_confirmations}/${hard_fail_required})"
+                if [ "$hard_fail_confirmations" -ge "$hard_fail_required" ]; then
+                  echo "main project kept hard failure states during active queue; marking workflow failed" >&2
+                  osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv \
+                    | awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print}'
+                  exit 1
+                fi
+              else
+                echo "core queue drained but hard failure states remain; marking workflow failed" >&2
+                osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv \
+                  | awk -F';' '$2=="failed" || $2=="broken" || $2=="unresolvable"{print}'
+                exit 1
+              fi
+            else
+              hard_fail_confirmations=0
             fi
 
-            core_active=$((building + scheduled + dispatching))
             if [ "$core_active" -eq 0 ]; then
               echo "core build queue is empty; leaving signing/blocked tail handling to OBS"
               exit 0

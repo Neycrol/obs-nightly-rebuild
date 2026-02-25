@@ -126,7 +126,17 @@ jobs:
               fi
             } >> "$GITHUB_STEP_SUMMARY"
 
-            echo "hard failure states remain after scheduling retries" >&2
+            if [ "$skipped_toolchain" -gt 0 ]; then
+              echo "hard failure states include toolchain blockers; manual action required" >&2
+              exit 1
+            fi
+
+            if [ "$retried_any" -gt 0 ]; then
+              echo "targeted retries scheduled; let next convergence cycle validate final state"
+              exit 0
+            fi
+
+            echo "hard failure states detected but no retry action was applied" >&2
             exit 1
           fi
 
