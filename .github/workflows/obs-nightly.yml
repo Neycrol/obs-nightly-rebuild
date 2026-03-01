@@ -37,9 +37,32 @@ jobs:
           OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
           : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
           : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
           : "${OBS_ARCH:=x86_64}"
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
 
           refresh_services_for_project() {
             local project="$1"
@@ -48,7 +71,8 @@ jobs:
             local total=0
             local svc=0
 
-            while IFS= read -r pkg; do
+            mapfile -t pkgs < <(retry_cmd osc ls "$project")
+            for pkg in "${pkgs[@]}"; do
               [ -n "$pkg" ] || continue
               total=$((total + 1))
 
@@ -72,7 +96,7 @@ jobs:
                 echo "WARN: runservice failed for ${project}/${pkg}" >&2
                 failed=$((failed + 1))
               fi
-            done < <(osc ls "$project")
+            done
 
             echo "project=${project} packages=${total} service_packages=${svc} runservice_failed=${failed}"
           }
@@ -85,10 +109,33 @@ jobs:
           OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
+
           : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
           : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
           : "${OBS_ARCH:=x86_64}"
-          osc rebuild --all --repo "$OBS_BOOTSTRAP_REPO" --arch "$OBS_ARCH" "$OBS_BOOTSTRAP_PROJECT"
+          retry_cmd osc rebuild --all --repo "$OBS_BOOTSTRAP_REPO" --arch "$OBS_ARCH" "$OBS_BOOTSTRAP_PROJECT"
 
       - name: Wait bootstrap glibc producer to finish
         env:
@@ -96,6 +143,29 @@ jobs:
           OBS_BOOTSTRAP_REPO: ${{ secrets.OBS_BOOTSTRAP_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
+
           : "${OBS_BOOTSTRAP_PROJECT:=home:neycrol:buildfactory-bootstrap}"
           : "${OBS_BOOTSTRAP_REPO:=bootstrap}"
           : "${OBS_ARCH:=x86_64}"
@@ -105,7 +175,7 @@ jobs:
           elapsed=0
 
           while true; do
-            state="$(osc results "$OBS_BOOTSTRAP_PROJECT" -r "$OBS_BOOTSTRAP_REPO" -a "$OBS_ARCH" --csv \
+            state="$(retry_cmd osc results "$OBS_BOOTSTRAP_PROJECT" -r "$OBS_BOOTSTRAP_REPO" -a "$OBS_ARCH" --csv \
               | awk -F';' '$1=="glibc-god"{print $2}')"
 
             echo "bootstrap glibc-god state=${state:-unknown} elapsed=${elapsed}s"
@@ -134,15 +204,39 @@ jobs:
           OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
           : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
           : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
 
           failed=0
           total=0
           svc=0
 
-          while IFS= read -r pkg; do
+          mapfile -t pkgs < <(retry_cmd osc ls "$OBS_MAIN_PROJECT")
+          for pkg in "${pkgs[@]}"; do
             [ -n "$pkg" ] || continue
             total=$((total + 1))
 
@@ -166,7 +260,7 @@ jobs:
               echo "WARN: runservice failed for ${OBS_MAIN_PROJECT}/${pkg}" >&2
               failed=$((failed + 1))
             fi
-          done < <(osc ls "$OBS_MAIN_PROJECT")
+          done
 
           echo "project=${OBS_MAIN_PROJECT} packages=${total} service_packages=${svc} runservice_failed=${failed}"
 
@@ -176,13 +270,36 @@ jobs:
           OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
+
           : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
           : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
           # Main project holds the single consumer repo and includes glibc-god aggregate package.
-          osc rebuild --all --repo "$OBS_MAIN_REPO" --arch "$OBS_ARCH" "$OBS_MAIN_PROJECT"
+          retry_cmd osc rebuild --all --repo "$OBS_MAIN_REPO" --arch "$OBS_ARCH" "$OBS_MAIN_PROJECT"
           # Ensure glibc aggregate is scheduled right after bootstrap producer completion.
-          osc rebuildpac "$OBS_MAIN_PROJECT" glibc-god "$OBS_MAIN_REPO" "$OBS_ARCH" || true
+          retry_cmd osc rebuildpac "$OBS_MAIN_PROJECT" glibc-god "$OBS_MAIN_REPO" "$OBS_ARCH" || true
 
       - name: Observe main project health window (do not block on signing tail)
         env:
@@ -190,6 +307,29 @@ jobs:
           OBS_MAIN_REPO: ${{ secrets.OBS_REPO }}
           OBS_ARCH: ${{ secrets.OBS_ARCH }}
         run: |
+          set -euo pipefail
+
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
+
           : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
           : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
@@ -205,7 +345,7 @@ jobs:
 
           while [ "$elapsed" -le "$monitor_sec" ]; do
             read -r succeeded blocked building scheduled dispatching signing finished failed broken unresolvable excluded disabled < <(
-              osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv \
+              retry_cmd osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv \
               | awk -F';' '
                   NF>=2 && $1!="_" { c[$2]++ }
                   END {

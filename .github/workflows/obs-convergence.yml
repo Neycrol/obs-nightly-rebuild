@@ -44,12 +44,33 @@ jobs:
         run: |
           set -euo pipefail
 
+          retry_cmd() {
+            local max_attempts="${RETRY_MAX_ATTEMPTS:-5}"
+            local delay="${RETRY_INITIAL_DELAY:-3}"
+            local attempt=1
+            while true; do
+              "$@" && return 0
+              local rc=$?
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "ERROR: command failed after ${attempt} attempts (rc=${rc}): $*" >&2
+                return "$rc"
+              fi
+              echo "WARN: command failed (rc=${rc}), retry ${attempt}/${max_attempts} in ${delay}s: $*" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+              delay=$((delay * 2))
+              if [ "$delay" -gt 30 ]; then
+                delay=30
+              fi
+            done
+          }
+
           : "${OBS_MAIN_PROJECT:=home:neycrol:buildfactory}"
           : "${OBS_MAIN_REPO:=buildfactory}"
           : "${OBS_ARCH:=x86_64}"
 
           results_csv="$(mktemp)"
-          osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv > "$results_csv"
+          retry_cmd osc results "$OBS_MAIN_PROJECT" -r "$OBS_MAIN_REPO" -a "$OBS_ARCH" --csv > "$results_csv"
 
           read -r succeeded blocked building scheduled dispatching signing finished failed broken unresolvable excluded disabled < <(
             awk -F';' '
@@ -88,7 +109,7 @@ jobs:
               [ -n "$pkg" ] || continue
               echo "----- buildlog tail: ${pkg} -----"
               log_tail="$(mktemp)"
-              osc remotebuildlog "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" 2>/dev/null | tail -n 120 > "$log_tail" || true
+              retry_cmd osc remotebuildlog "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" 2>/dev/null | tail -n 120 > "$log_tail" || true
               cat "$log_tail"
 
               if grep -Eq 'cannot find crtbeginS\.o|cannot find -lgcc|linker .*linux-gnu-gcc.* not found' "$log_tail"; then
@@ -99,7 +120,7 @@ jobs:
               fi
 
               echo "rebuildpac: ${pkg}"
-              osc rebuildpac "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" || true
+              retry_cmd osc rebuildpac "$OBS_MAIN_PROJECT" "$pkg" "$OBS_MAIN_REPO" "$OBS_ARCH" || true
               retried_any=$((retried_any + 1))
               retried_pkgs+=("$pkg")
             done
